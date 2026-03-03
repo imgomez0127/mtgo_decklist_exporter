@@ -1,0 +1,13 @@
+[project]
+name = "mtgo-decklist-exporter"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "beautifulsoup4>=4.14.3",
+    "httpx>=0.28.1",
+    "lxml>=6.0.2",
+    "mcp[cli]>=1.26.0",
+    "requests>=2.32.5",
+]
