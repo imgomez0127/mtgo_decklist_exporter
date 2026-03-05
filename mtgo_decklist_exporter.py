@@ -1,4 +1,7 @@
 import asyncio
+from collections.abc import Sequence
+import dataclasses
+from datetime import datetime
 import itertools
 import random
 import re
@@ -10,60 +13,73 @@ from playwright.async_api import async_playwright
 import requests
 
 # Initialize FastMCP server
-mcp = FastMCP("mtgo_decklist_exporter")
+mcp = FastMCP('mtgo_decklist_exporter')
 
 # Shared Headers
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
 
-async def get_events(target_date: str, format_filter: str = None) -> list:
+@dataclasses.dataclass
+class Decklist:
+    """Data representation of a decklist
+
+    Args:
+      player: Name of the player who placed with the deck.
+      mainboard: Cards in the main deck.
+      sideboard: Cards in the sideboard.
+    """
+    player: str
+    mainboard: Sequence[str]
+    sideboard: Sequence[str]
+
+
+async def get_events(
+        date: datetime,
+        mtg_format: str = None
+) -> Sequence[str]:
     """
     Finds MTGO tournament URLs for a specific date (YYYY-MM-DD).
     Optionally filters by format (e.g., 'modern', 'legacy').
+
+    Args:
+      date: Date of the MTGO events.
+      mtg_format: MTGO format of the event
     """
-    year, month, day = target_date.split('-')
-    archive_url = f"https://www.mtgo.com/decklists/{year}/{month}"
+    archive_url = f'https://www.mtgo.com/decklists/{date.year}/{date.month}'
 
     response = requests.get(archive_url, headers=HEADERS)
     soup = BeautifulSoup(response.text, 'lxml')
-    pattern = re.compile(rf"/decklist/(?P<type>.+)-{year}-{month}-{day}(?P<id>\d+)")
-
-    unique_events = {}
+    pattern = re.compile(rf'/decklist/(?P<type>.+)-{date.year}-{date.month:02d}-{date.day:02d}(?P<id>\d+)')
+    events = set()
     for link in soup.find_all('a', href=True):
         match = pattern.search(link['href'])
         if match:
             event_type = match.group('type')
-            if format_filter and format_filter.lower() not in event_type.lower():
-                continue
-
-            full_url = "https://www.mtgo.com" + link['href']
-            unique_events[full_url] = {
-                "name": link.get_text(strip=True),
-                "url": full_url,
-                "id": match.group('id')
-            }
-    return list(unique_events.values())
+            if mtg_format is None or mtg_format.lower() in event_type.lower():
+                full_url = "https://www.mtgo.com" + link['href']
+                events.add(full_url)
+    return events
 
 
-async def get_event_decklists(event_url: str) -> list:
+async def get_event_decklists(event_url: str) -> Sequence[Decklist]:
     """
     Scrapes all decklists from a specific MTGO event URL.
     """
     async with async_playwright() as p:
         # Launch browser
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(user_agent=HEADERS["User-Agent"])
+        context = await browser.new_context(user_agent=HEADERS['User-Agent'])
         page = await context.new_page()
 
         # Navigate and wait for JS to render
         await page.goto(event_url)
         try:
             # Wait for the main decklist container to load
-            await page.wait_for_selector("section.decklist", timeout=15000)
+            await page.wait_for_selector('section.decklist', timeout=15000)
             content = await page.content()
         except Exception as e:
             await browser.close()
-            return [{"error": f"Page load timed out: {str(e)}"}]
+            return []
 
         await browser.close()
     soup = BeautifulSoup(content, 'lxml')
@@ -75,10 +91,25 @@ async def get_event_decklists(event_url: str) -> list:
         player_list = container.find_all(class_='decklist-player')
         if player_list:
             player = player_list[0].get_text(strip=True)
-            deck_data = {"player": player, "decklist": []}
-            for card in container.find_all('a', class_='decklist-card-link'):
-                deck_data['decklist'].append(card.string)
-            decks.append(deck_data)
+            mainboard = []
+            sideboard = []
+            mainboard_container = container.find_all(
+                class_='decklist-category-columns'
+            )
+            if mainboard_container:
+                mainboard = [
+                    card.string for card in
+                    mainboard_container[0].find_all(class_='decklist-card-link')
+                ]
+            sideboard_container = container.find_all(
+                class_='decklist-sideboard'
+            )
+            if sideboard_container:
+                sideboard = [
+                    card.string for card in
+                    sideboard_container[0].find_all(class_='decklist-card-link')
+                ]
+            decks.append(Decklist(player, mainboard, sideboard))
     return decks
 
 
@@ -86,7 +117,7 @@ def format_decklist_output(deck_data):
     """
     Transforms a deck dictionary into a labeled readable format.
     Format:
-    Player Name
+    Player: Player Name
     Mainboard:
     4 Card Name
 
@@ -96,45 +127,52 @@ def format_decklist_output(deck_data):
     lines = []
 
     # 1. Player Header
-    lines.append(deck_data.get("player", "Unknown Player"))
+    lines.append(f'Player: {deck_data.player}')
 
     # 2. Mainboard Section
-    lines.append("Decklist:")
-    for card in deck_data.get("decklist", []):
-        lines.append(f"{card}")
+    lines.append('--Mainboard--')
+    for card in deck_data.mainboard:
+        lines.append(f'{card}')
 
-    return "\n".join(lines)
+    lines.append('\n--Sideboard--')
+    for card in deck_data.sideboard:
+        lines.append(f'{card}')
+    return '\n'.join(lines)
 
 
 @mcp.tool()
 async def get_decklists(
-        target_date: str,
-        format_filter: str | None = None,
+        date: str,
+        mtg_format: str | None = None,
         amount: int = 5
 ):
     """
     Gets all decklists for @target_date for a format or all events.
 
     Args:
-      target_date: Date that we are getting data for.
-      format_filter: The MTG format we are getting decklists for.
+      date: Date we are getting data for formatted as YYYY-MM-DD.
+      mtg_format: The MTG format we are getting decklists for.
         If this is None, then we will grab all formats.
       amount: Number of decks to return in the output.
 
     Returns:
       A string with @amount of decklists that were for the @target_date
-      filtered by format using @format_filter.
+      filtered by format using @mtg_format.
     """
-    events = await get_events(target_date, format_filter)
+    try:
+        date = datetime.strptime(date, '%Y-%m-%d')
+    except ValueError:
+        return 'The input date was not formatted as %Y-%m-%d'
+    events = await get_events(date, mtg_format)
     decklists = []
     for event in events:
-        event_decklists = await get_event_decklists(event['url'])
+        event_decklists = await get_event_decklists(event)
         decklists.extend(event_decklists)
     sampled_decks = random.sample(
         decklists,
         k=min(amount, len(decklists))
     )
-    return '\n'.join(
+    return '\n\n'.join(
         format_decklist_output(decklist)
         for decklist in sampled_decks
     )
