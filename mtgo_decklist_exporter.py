@@ -16,7 +16,10 @@ import requests
 mcp = FastMCP('mtgo_decklist_exporter')
 
 # Shared Headers
-HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+HEADERS = {
+    'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+                   ' AppleWebKit/537.36')
+}
 
 
 @dataclasses.dataclass
@@ -49,7 +52,8 @@ async def get_events(
 
     response = requests.get(archive_url, headers=HEADERS)
     soup = BeautifulSoup(response.text, 'lxml')
-    pattern = re.compile(rf'/decklist/(?P<type>.+)-{date.year}-{date.month:02d}-{date.day:02d}(?P<id>\d+)')
+    pattern = re.compile(rf'/decklist/(?P<type>.+)-{date.year}-'
+                         rf'{date.month:02d}-{date.day:02d}(?P<id>\d+)')
     events = set()
     for link in soup.find_all('a', href=True):
         match = pattern.search(link['href'])
@@ -77,7 +81,7 @@ async def get_event_decklists(event_url: str) -> Sequence[Decklist]:
             # Wait for the main decklist container to load
             await page.wait_for_selector('section.decklist', timeout=15000)
             content = await page.content()
-        except Exception as e:
+        except Exception:
             await browser.close()
             return []
 
@@ -99,7 +103,9 @@ async def get_event_decklists(event_url: str) -> Sequence[Decklist]:
             if mainboard_container:
                 mainboard = [
                     card.string for card in
-                    mainboard_container[0].find_all(class_='decklist-card-link')
+                    mainboard_container[0].find_all(
+                        class_='decklist-card-link'
+                    )
                 ]
             sideboard_container = container.find_all(
                 class_='decklist-sideboard'
@@ -107,7 +113,9 @@ async def get_event_decklists(event_url: str) -> Sequence[Decklist]:
             if sideboard_container:
                 sideboard = [
                     card.string for card in
-                    sideboard_container[0].find_all(class_='decklist-card-link')
+                    sideboard_container[0].find_all(
+                        class_='decklist-card-link'
+                    )
                 ]
             decks.append(Decklist(player, mainboard, sideboard))
     return decks
